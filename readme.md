@@ -1,6 +1,9 @@
 # Async::Job::Processor::Redis
 
-Provides an asynchronous job server.
+Provides a Redis-backed asynchronous job server with durable ready, delayed,
+and processing queues. Processing can be bounded by an asynchronous concurrency
+parent, and delayed promotion recovers from transient failures without stopping
+the server.
 
 [![Development Status](https://github.com/socketry/async-job-processor-redis/workflows/Test/badge.svg)](https://github.com/socketry/async-job-processor-redis/actions?workflow=Test)
 
@@ -10,7 +13,7 @@ Please see the [project documentation](https://socketry.github.io/async-job-proc
 
   - [Getting Started](https://socketry.github.io/async-job-processor-redis/guides/getting-started/index) - This guide gives you an overview of the `async-job-processor-redis` gem.
 
-  - [Redis Queue](https://socketry.github.io/async-job-processor-redis/guides/redis-queue/index) - This guide gives a brief overview of the implementation of the Redis queue.
+  - [Redis Queue](https://socketry.github.io/async-job-processor-redis/guides/redis-queue/index) - Queue lifecycle, bounded processing, delayed promotion, and recovery behavior.
 
 ## Releases
 

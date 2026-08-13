@@ -1,19 +1,55 @@
 # Redis Queue
 
-This guide gives a brief overview of the implementation of the Redis queue.
+The processor retains each serialized job while its ID moves through the ready,
+delayed, and processing queues. This provides at-least-once delivery: a job may
+run again after worker loss, so delegates must tolerate replay.
 
-## Overview
+## Queue lifecycle
 
-The Redis queue plays a pivotal role in facilitating a sophisticated and reliable job queue architecture, designed to handle diverse processing needs with efficiency and resilience. The architecture is thoughtfully split into three distinct components, each serving a critical function in the lifecycle of a job: the ready queue, the delayed queue, and the processing queue.
+### Ready queue
 
-## Ready Queue
+Immediately runnable job IDs enter a FIFO Redis list. A worker atomically moves
+one ID from ready to its own processing list before loading and executing the
+retained payload.
 
-The ready queue is where jobs that are immediately available for processing are stored. When a job is submitted and is ready to be executed without any delay, it is placed into this queue. Worker processes constantly listen for new jobs on the ready queue, dequeuing and executing them as soon as they become available. This queue operates on a FIFO (First In, First Out) basis, ensuring that jobs are processed in the order they were received.
+### Delayed queue
 
-## Delayed Queue
+Scheduled job IDs enter a Redis sorted set ordered by execution time. A
+background promoter periodically moves due IDs to the ready list. The payload
+remains retained throughout the transition.
 
-The delayed queue holds jobs that are not meant to be executed immediately but at a specified future time. This functionality is crucial for tasks that need to be executed at a later stage, such as scheduled notifications or time-dependent processes. Jobs in the delayed queue are sorted according to their execution time. When possible, they are moved to the ready queue to be executed by the next available worker. This transition is managed through Redis's sorted sets, allowing efficient retrieval and management of timed events.
+### Processing queue
 
-## Processing Queue
+Each worker has a processing list and heartbeat. Successful execution removes
+the claim and payload. A delegate failure returns the claim to ready. If a
+worker heartbeat expires, another processor returns its abandoned claims to
+ready for replay.
 
-Once a job is dequeued from the ready queue, it enters the processing queue, signifying that it is currently being executed by a worker. The processing queue is crucial for tracking the progress of jobs and for ensuring that jobs can be retried or recovered in case of worker failure. Each worker emits a heartbeat, and if a worker fails to emit a heartbeat within a specified time, any jobs associated with that worker are automatically moved back to the ready queue for reprocessing.
+## Processing concurrency
+
+Without an explicit `parent`, the server keeps one blocking Redis fetch in
+flight and schedules fetched jobs through `Async::Idler`. This preserves the
+original behavior while preventing the idler from opening unbounded blocking
+fetches.
+
+Pass an asynchronous concurrency parent, such as `Async::Semaphore`, to set an
+explicit bound. The dispatcher reserves a parent slot before the blocking fetch
+and holds it through processing, so blocked fetches and executing jobs share the
+same limit.
+
+## Delayed-promotion recovery
+
+A Redis or promotion error does not terminate the promoter. It retries with
+exponential backoff starting at 0.25 seconds and capped at 5 seconds. A
+successful move after failures reports recovery and resumes the configured
+polling interval. `Async::Cancel` exits immediately as normal lifecycle control.
+
+The server logs failed attempts and recovery through `Console`. Applications
+can also pass `delayed_jobs_instrumentation`, an object responding to
+`call(event, **details)`:
+
+- `:failure` includes `error`, `consecutive_failures`, and `retry_in_seconds`.
+- `:recovered` includes the previous `consecutive_failures` count.
+
+Logging and instrumentation failures are isolated so observability cannot stop
+scheduled jobs from being promoted.

@@ -39,3 +39,29 @@ Async do
 	server.stop
 end
 ```
+
+## Bounded processing and instrumentation
+
+Pass an asynchronous concurrency parent to bound blocking Redis fetches and job
+processing together. `Async::Semaphore` is the usual choice:
+
+``` ruby
+require "async/semaphore"
+
+promoter_events = proc do |event, **|
+	warn "Delayed promoter: #{event}"
+end
+
+queue = Async::Job::Builder.build(buffer) do
+	dequeue Async::Job::Processor::Redis,
+		parent: Async::Semaphore.new(20),
+		delayed_jobs_instrumentation: promoter_events
+end
+```
+
+The callback receives `:failure` with the error, consecutive failure count, and
+retry delay. After a successful promotion it receives `:recovered` with the
+previous failure count. Callback failures are isolated from the promoter.
+
+Omit `parent` to retain the compatibility behavior: one blocking fetch stays in
+flight while fetched jobs are scheduled through `Async::Idler`.

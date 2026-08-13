@@ -12,5 +12,7 @@ files:
     gem.
 - path: redis-queue.md
   title: Redis Queue
-  description: This guide gives a brief overview of the implementation of the Redis
-    queue.
+  description: |-
+    The processor retains each serialized job while its ID moves through the ready,
+    delayed, and processing queues. This provides at-least-once delivery: a job may
+    run again after worker loss, so delegates must tolerate replay.
