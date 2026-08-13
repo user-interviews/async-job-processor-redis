@@ -88,7 +88,10 @@ describe Async::Job::Processor::Redis do
 	end
 	
 	with "concurrency limit" do
-		# Delegate that sleeps for 5 seconds to simulate slow job processing
+		let(:server) {subject.new(slow_delegate, prefix:, resolution: 1, parent:)}
+		let(:parent) {nil}
+		
+		# A delegate that yields long enough to observe concurrent processing:
 		let(:slow_delegate) do
 			Class.new do
 				def start
@@ -97,53 +100,37 @@ describe Async::Job::Processor::Redis do
 				def stop
 				end
 				
-				def call(job)
+				def call(_job)
 					sleep 5
 				end
 			end.new
 		end
 		
-		with "Async::Idler" do
-			let(:idler_server) {subject.new(slow_delegate, prefix:, resolution: 1)}
-			
-			it "can process all jobs concurrently" do
-				idler_server.start
-				
-				# Enqueue 10 jobs
-				10.times do |i|
-					idler_server.call({"data" => "job #{i}"})
-				end
-				
-				# Give time for all jobs to be picked up
-				sleep 0.5
-				
-				# With Async::Idler (unlimited concurrency), all 10 jobs should be in processing status
-				status = idler_server.status_string
-				expect(status).to be =~ /P=(10|[5-9])\//
-				
-				idler_server.stop
+		it "preserves default concurrent processing without concurrent fetches" do
+			4.times do |i|
+				server.call({"data" => "job #{i}"})
 			end
+			
+			Async::Task.current.with_timeout(2) do
+				sleep(0.01) until server.status_string.match?(/P=4\//)
+			end
+			
+			expect(server.status_string).to be =~ /P=4\//
 		end
 		
 		with "Async::Semaphore" do
-			let(:semaphore_server) {subject.new(slow_delegate, prefix:, resolution: 1, parent: Async::Semaphore.new(2))}
+			let(:parent) {Async::Semaphore.new(2)}
 			
 			it "can limit concurrent job processing to 2" do
-				semaphore_server.start
-				
-				# Enqueue 10 jobs
-				10.times do |i|
-					semaphore_server.call({"data" => "job #{i}"})
+				4.times do |i|
+					server.call({"data" => "job #{i}"})
 				end
 				
-				# Give time for jobs to be picked up
-				sleep 0.5
+				Async::Task.current.with_timeout(2) do
+					sleep(0.01) until server.status_string.match?(/P=2\//)
+				end
 				
-				# Only 2 jobs should be in processing status
-				status = semaphore_server.status_string
-				expect(status).to be =~ /P=2\//
-				
-				semaphore_server.stop
+				expect(server.status_string).to be =~ /P=2\//
 			end
 		end
 	end

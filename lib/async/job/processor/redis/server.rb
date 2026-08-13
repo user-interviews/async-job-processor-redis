@@ -28,7 +28,7 @@ module Async
 					# @parameter prefix [String] The Redis key prefix for job data.
 					# @parameter coder [Async::Job::Coder] The job serialization codec.
 					# @parameter resolution [Integer] The resolution in seconds for delayed job processing.
-					# @parameter parent [Async::Task] The parent task for background processing.
+					# @parameter parent [Interface(:async) | Nil] An optional concurrency parent for job processing.
 					def initialize(delegate, client, prefix: "async-job", coder: Coder::DEFAULT, resolution: 10, parent: nil)
 						super(delegate)
 						
@@ -44,6 +44,7 @@ module Async
 						@processing_list = ProcessingList.new(@client, "#{@prefix}:processing", @id, @ready_list, @job_store)
 						
 						@parent = parent || Async::Idler.new
+						@concurrency_parent = parent
 					end
 					
 					# Start the job processing loop immediately.
@@ -53,16 +54,28 @@ module Async
 						
 						@task = true
 						
-						Async do |task|
-							@task = task
-							
-							while true
-								@parent.async(transient: true, annotation: self.class.name) do
-									self.dequeue
+						if @concurrency_parent
+							Async do |task|
+								@task = task
+								
+								while true
+									@concurrency_parent.async(transient: true, annotation: self.class.name) do
+										self.dequeue
+									end
 								end
+							ensure
+								@task = nil
 							end
-						ensure
-							@task = nil
+						else
+							@parent.async(transient: true, annotation: self.class.name) do |task|
+								@task = task
+								
+								while true
+									self.dequeue(task)
+								end
+							ensure
+								@task = nil
+							end
 						end
 					end
 					
@@ -122,19 +135,27 @@ module Async
 					# If the job fails for any reason, it will be retried.
 					#
 					# If you do not desire this behavior, you should catch exceptions in the delegate.
-					def dequeue
+					def dequeue(parent = nil)
 						_id = @processing_list.fetch
 						
-						id = _id; _id = nil
-						
+						id = _id
+						if parent
+							parent.async{process(id)}
+						else
+							process(id)
+						end
+						_id = nil
+					ensure
+						@processing_list.retry(_id) if _id
+					end
+					
+					def process(id)
 						job = @coder.load(@job_store.get(id))
 						@delegate.call(job)
 						@processing_list.complete(id)
 					rescue => error
 						Console.error(self, "Job failed with error!", id: id, exception: error)
 						@processing_list.retry(id)
-					ensure
-						@processing_list.retry(_id) if _id
 					end
 					
 					private
