@@ -13,7 +13,7 @@ module Async
 				class DelayedJobs
 					INITIAL_RETRY_DELAY = 0.25
 					MAXIMUM_RETRY_DELAY = 5
-
+					
 					ADD = <<~LUA
 						redis.call('HSET', KEYS[1], ARGV[1], ARGV[2])
 						redis.call('ZADD', KEYS[2], ARGV[3], ARGV[1])
@@ -53,7 +53,7 @@ module Async
 					def start(ready_list, resolution: 10, parent: Async::Task.current, instrumentation: nil)
 						parent.async do
 							consecutive_failures = 0
-
+							
 							loop do
 								count = move(destination: ready_list.key)
 								
@@ -61,7 +61,7 @@ module Async
 									report_recovery(instrumentation, consecutive_failures)
 									consecutive_failures = 0
 								end
-
+								
 								if count > 0
 									Console.debug(self, "Moved #{count} delayed jobs to ready list.")
 								end
@@ -101,13 +101,13 @@ module Async
 					def move(destination:, now: Time.now.to_f)
 						@client.evalsha(@move, 2, @key, destination, now)
 					end
-
+					
 					private
-
+					
 					def retry_delay(consecutive_failures)
 						[INITIAL_RETRY_DELAY * (2 ** (consecutive_failures - 1)), MAXIMUM_RETRY_DELAY].min
 					end
-
+					
 					def report_failure(instrumentation, error, consecutive_failures, retry_in_seconds)
 						Console.warn(
 							self,
@@ -121,7 +121,7 @@ module Async
 					ensure
 						instrument(instrumentation, :failure, error:, consecutive_failures:, retry_in_seconds:)
 					end
-
+					
 					def report_recovery(instrumentation, consecutive_failures)
 						Console.info(self, "Delayed job promotion recovered.", consecutive_failures:)
 					rescue
@@ -129,7 +129,7 @@ module Async
 					ensure
 						instrument(instrumentation, :recovered, consecutive_failures:)
 					end
-
+					
 					def instrument(instrumentation, event, **details)
 						instrumentation&.call(event, **details)
 					rescue
