@@ -143,10 +143,97 @@ describe Async::Job::Processor::Redis::DelayedJobs do
 			task.stop
 			
 			# Check for debug log message
-			expect_console.to have_logged(
-				severity: be == :debug,
-				message: be(:include?, "Moved 1 delayed jobs to ready list")
+				expect_console.to have_logged(
+					severity: be == :debug,
+					message: be(:include?, "Moved 1 delayed jobs to ready list")
+				)
+			end
+
+		it "retries failed promotions and reports recovery" do
+			attempts = 0
+			events = []
+			instrumentation = proc{|event, **details| events << [event, details]}
+
+			delayed_jobs.define_singleton_method(:move) do |destination:|
+				attempts += 1
+				raise "Redis unavailable" if attempts == 1
+
+				0
+			end
+
+			task = delayed_jobs.start(ready_list, resolution: 60, instrumentation:)
+
+			Async::Task.current.with_timeout(2) do
+				sleep(0.01) until attempts >= 2
+			end
+			task.stop
+
+			expect(events).to have_attributes(size: be == 2)
+			expect(events[0]).to have_attributes(
+				first: be == :failure,
+				last: have_keys(
+					error: be_a(RuntimeError),
+					consecutive_failures: be == 1,
+					retry_in_seconds: be == 0.25,
+				),
 			)
+			expect(events[1]).to be == [:recovered, {consecutive_failures: 1}]
+
+			expect_console.to have_logged(
+				severity: be == :warn,
+				message: be(:include?, "Delayed job promotion failed"),
+			)
+			expect_console.to have_logged(
+				severity: be == :info,
+				message: be(:include?, "Delayed job promotion recovered"),
+			)
+		ensure
+			task&.stop
+		end
+
+		it "continues when instrumentation fails" do
+			attempts = 0
+			instrumentation = proc do
+				raise "Instrumentation unavailable"
+			end
+
+			delayed_jobs.define_singleton_method(:move) do |destination:|
+				attempts += 1
+				raise "Redis unavailable" if attempts == 1
+
+				0
+			end
+
+			task = delayed_jobs.start(ready_list, resolution: 60, instrumentation:)
+
+			Async::Task.current.with_timeout(2) do
+				sleep(0.01) until attempts >= 2
+			end
+			expect(task).not.to be(:finished?)
+		ensure
+			task&.stop
+		end
+
+		it "caps exponential retry delays" do
+			expect(delayed_jobs.send(:retry_delay, 1)).to be == 0.25
+			expect(delayed_jobs.send(:retry_delay, 2)).to be == 0.5
+			expect(delayed_jobs.send(:retry_delay, 10)).to be == 5
+		end
+
+		it "does not report task cancellation as a promoter failure" do
+			events = []
+			task = delayed_jobs.start(
+				ready_list,
+				resolution: 60,
+				instrumentation: proc{|event, **details| events << [event, details]},
+			)
+
+			sleep(0.01)
+			task.stop
+
+			expect(events).to be(:empty?)
+		ensure
+			task&.stop
 		end
 	end
 end
