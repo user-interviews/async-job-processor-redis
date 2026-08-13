@@ -45,7 +45,11 @@ module Async
 						@ready_list = ReadyList.new(@client, "#{@prefix}:ready")
 						@processing_list = ProcessingList.new(@client, "#{@prefix}:processing", @id, @ready_list, @job_store)
 						
+						# Without an explicit concurrency parent, preserve the original single
+						# blocking fetch loop and use Idler only after a job has been fetched.
 						@parent = parent || Async::Idler.new
+						# An explicit parent (typically a Semaphore) owns both the blocking fetch
+						# and processing, so each reserved slot maps to at most one Redis fetch.
 						@concurrency_parent = parent
 					end
 					
@@ -57,6 +61,8 @@ module Async
 						@task = true
 						
 						if @concurrency_parent
+							# Reserve a caller-supplied concurrency slot before BRPOPLPUSH. Counting
+							# blocked fetches prevents the dispatcher from opening unbounded Redis IO.
 							Async do |task|
 								@task = task
 								
@@ -69,6 +75,8 @@ module Async
 								@task = nil
 							end
 						else
+							# The compatibility path keeps exactly one blocking fetch in flight, then
+							# hands the fetched job to Idler so processing can still overlap.
 							@parent.async(transient: true, annotation: self.class.name) do |task|
 								@task = task
 								
@@ -144,6 +152,8 @@ module Async
 					def dequeue(parent = nil)
 						_id = @processing_list.fetch
 						
+						# Keep _id until processing is safely scheduled. If scheduling raises, the
+						# ensure block returns the fetched item to ready instead of losing it.
 						id = _id
 						if parent
 							parent.async{process(id)}
@@ -155,6 +165,8 @@ module Async
 						@processing_list.retry(_id) if _id
 					end
 					
+					# Process within the concurrency owner selected by #start! and convert
+					# delegate failures back into normal Redis retries.
 					def process(id)
 						job = @coder.load(@job_store.get(id))
 						@delegate.call(job)

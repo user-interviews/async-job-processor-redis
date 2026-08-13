@@ -11,6 +11,8 @@ module Async
 				# Jobs are stored with their execution timestamps and automatically moved
 				# to the ready queue when their scheduled time arrives.
 				class DelayedJobs
+					# Retry transient Redis failures quickly, but cap the delay so scheduled
+					# jobs resume promotion promptly after a longer outage.
 					INITIAL_RETRY_DELAY = 0.25
 					MAXIMUM_RETRY_DELAY = 5
 					
@@ -54,9 +56,12 @@ module Async
 						parent.async do
 							consecutive_failures = 0
 							
+							# Keep this task alive across operational failures. Otherwise one failed
+							# promotion silently strands delayed jobs while immediate jobs still run.
 							loop do
 								count = move(destination: ready_list.key)
 								
+								# Recovery is observable only after Redis successfully completes a move.
 								if consecutive_failures > 0
 									report_recovery(instrumentation, consecutive_failures)
 									consecutive_failures = 0
@@ -68,6 +73,7 @@ module Async
 								
 								sleep(resolution)
 							rescue Async::Cancel
+								# Cancellation is lifecycle control, not an operational failure to retry.
 								raise
 							rescue => error
 								consecutive_failures += 1
