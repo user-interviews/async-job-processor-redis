@@ -42,8 +42,8 @@ end
 
 ## Bounded processing and instrumentation
 
-Pass an asynchronous concurrency parent to bound blocking Redis fetches and job
-processing together. `Async::Semaphore` is the usual choice:
+Pass `Async::Semaphore` as the parent to bound blocking Redis fetches and job
+processing together:
 
 ``` ruby
 require "async/semaphore"
@@ -63,5 +63,7 @@ The callback receives `:failure` with the error, consecutive failure count, and
 retry delay. After a successful promotion it receives `:recovered` with the
 previous failure count. Callback failures are isolated from the promoter.
 
-Omit `parent` to retain the compatibility behavior: one blocking fetch stays in
-flight while fetched jobs are scheduled through `Async::Idler`.
+Omit `parent`, or pass an `Async::Task`, to retain the compatibility behavior:
+one blocking fetch stays in flight while fetched jobs run as children of the
+dispatcher. Redis fetch failures retry in the reserved slot with exponential
+backoff from 0.25 seconds up to 5 seconds.

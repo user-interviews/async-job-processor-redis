@@ -6,6 +6,7 @@
 require "async/idler"
 require "async/job/coder"
 require "async/job/processor/generic"
+require "async/semaphore"
 
 require "securerandom"
 
@@ -22,6 +23,9 @@ module Async
 				# Manages job queues using Redis for distributed job processing across multiple workers.
 				# Handles immediate jobs, delayed jobs, and job retry/recovery mechanisms.
 				class Server < Generic
+					INITIAL_DEQUEUE_RETRY_DELAY = 0.25
+					MAXIMUM_DEQUEUE_RETRY_DELAY = 5
+					
 					# Initialize a new Redis job processor server.
 					# @parameter delegate [Object] The delegate object that will process jobs.
 					# @parameter client [Async::Redis::Client] The Redis client instance.
@@ -29,7 +33,7 @@ module Async
 					# @parameter coder [Async::Job::Coder] The job serialization codec.
 					# @parameter resolution [Integer] The resolution in seconds for delayed job processing.
 					# @parameter delayed_jobs_instrumentation [Interface(:call) | Nil] An optional callback for delayed promoter events.
-					# @parameter parent [Interface(:async) | Nil] An optional concurrency parent for job processing.
+					# @parameter parent [Async::Task | Async::Semaphore | Nil] An optional lifecycle parent or concurrency limiter for job processing.
 					def initialize(delegate, client, prefix: "async-job", coder: Coder::DEFAULT, resolution: 10, delayed_jobs_instrumentation: nil, parent: nil)
 						super(delegate)
 						
@@ -45,12 +49,11 @@ module Async
 						@ready_list = ReadyList.new(@client, "#{@prefix}:ready")
 						@processing_list = ProcessingList.new(@client, "#{@prefix}:processing", @id, @ready_list, @job_store)
 						
-						# Without an explicit concurrency parent, preserve the original single
-						# blocking fetch loop and use Idler only after a job has been fetched.
+						# Ordinary task parents preserve the original single blocking fetch loop.
 						@parent = parent || Async::Idler.new
-						# An explicit parent (typically a Semaphore) owns both the blocking fetch
-						# and processing, so each reserved slot maps to at most one Redis fetch.
-						@concurrency_parent = parent
+						# A semaphore limits both blocking fetches and executing jobs, while the
+						# dispatcher task remains responsible for worker lifecycle.
+						@semaphore = parent if parent.is_a?(Async::Semaphore)
 					end
 					
 					# Start the job processing loop immediately.
@@ -60,14 +63,14 @@ module Async
 						
 						@task = true
 						
-						if @concurrency_parent
+						if @semaphore
 							# Reserve a caller-supplied concurrency slot before BRPOPLPUSH. Counting
 							# blocked fetches prevents the dispatcher from opening unbounded Redis IO.
 							Async do |task|
 								@task = task
 								
 								while true
-									@concurrency_parent.async(transient: true, annotation: self.class.name) do
+									@semaphore.async(parent: task, annotation: self.class.name) do
 										self.dequeue
 									end
 								end
@@ -150,7 +153,7 @@ module Async
 					#
 					# If you do not desire this behavior, you should catch exceptions in the delegate.
 					def dequeue(parent = nil)
-						_id = @processing_list.fetch
+						_id = fetch_with_backoff
 						
 						# Keep _id until processing is safely scheduled. If scheduling raises, the
 						# ensure block returns the fetched item to ready instead of losing it.
@@ -177,6 +180,37 @@ module Async
 					end
 					
 					private
+					
+					# Fetch a job while keeping the current dispatcher or semaphore slot reserved.
+					def fetch_with_backoff
+						consecutive_failures = 0
+						
+						loop do
+							begin
+								return @processing_list.fetch
+							rescue Async::Cancel
+								raise
+							rescue => error
+								consecutive_failures += 1
+								retry_in_seconds = dequeue_retry_delay(consecutive_failures)
+								
+								Console.warn(
+									self,
+									"Job dequeue failed; retrying in #{retry_in_seconds} seconds.",
+									error,
+									consecutive_failures:,
+									retry_in_seconds:,
+								)
+								
+								sleep(retry_in_seconds)
+							end
+						end
+					end
+					
+					# Compute the bounded exponential delay for a failed dequeue attempt.
+					def dequeue_retry_delay(consecutive_failures)
+						[INITIAL_DEQUEUE_RETRY_DELAY * (2 ** (consecutive_failures - 1)), MAXIMUM_DEQUEUE_RETRY_DELAY].min
+					end
 					
 					def format_count(value)
 						if value > 1_000_000

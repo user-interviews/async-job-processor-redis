@@ -27,15 +27,19 @@ ready for replay.
 
 ## Processing concurrency
 
-Without an explicit `parent`, the server keeps one blocking Redis fetch in
-flight and schedules fetched jobs through `Async::Idler`. This preserves the
-original behavior while preventing the idler from opening unbounded blocking
-fetches.
+Without a semaphore `parent`, the server keeps one blocking Redis fetch in
+flight and runs each fetched job as a child of the dispatcher. Passing an
+`Async::Task` as `parent` preserves this behavior and places the dispatcher
+under that task.
 
-Pass an asynchronous concurrency parent, such as `Async::Semaphore`, to set an
-explicit bound. The dispatcher reserves a parent slot before the blocking fetch
-and holds it through processing, so blocked fetches and executing jobs share the
-same limit.
+Pass `Async::Semaphore` as `parent` to set an explicit bound. The dispatcher
+reserves a semaphore slot before the blocking fetch and holds it through
+processing, so blocked fetches and executing jobs share the same limit.
+
+A failed blocking fetch retries within the same dispatcher or semaphore slot,
+using exponential backoff starting at 0.25 seconds and capped at 5 seconds.
+Stopping the server cancels in-flight workers and releases their semaphore
+slots.
 
 ## Delayed-promotion recovery
 
