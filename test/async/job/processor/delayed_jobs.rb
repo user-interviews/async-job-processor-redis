@@ -107,6 +107,48 @@ describe Async::Job::Processor::Redis::DelayedJobs do
 			expect(ready_jobs).to be(:include?, job_id_2)
 			expect(ready_jobs).to be(:include?, job_id_3)
 		end
+
+		it "reloads the move script after Redis flushes its script cache" do
+			past_time = Time.now - 60
+			job_id = delayed_jobs.add(test_job, past_time, job_store)
+			destination = ready_list.key
+			client.script(:flush)
+
+			count = delayed_jobs.move(destination:)
+
+			expect(count).to be == 1
+			expect(client.lpop(destination)).to be == job_id
+		end
+
+		it "retries NOSCRIPT only once" do
+			failing_client = Class.new do
+				attr :evalsha_count
+				attr :script_load_count
+
+				def initialize
+					@evalsha_count = 0
+					@script_load_count = 0
+				end
+
+				def script(subcommand, source = nil)
+					@script_load_count += 1
+					source
+				end
+
+				def evalsha(*)
+					@evalsha_count += 1
+					raise Protocol::Redis::ServerError, "NOSCRIPT No matching script."
+				end
+			end.new
+			failing_delayed_jobs = subject.new(failing_client, "#{prefix}:failing")
+
+			expect do
+				failing_delayed_jobs.move(destination: ready_list.key)
+			end.to raise_exception(Protocol::Redis::ServerError)
+
+			expect(failing_client.evalsha_count).to be == 2
+			expect(failing_client.script_load_count).to be == 3
+		end
 	end
 	
 	with "#start" do
