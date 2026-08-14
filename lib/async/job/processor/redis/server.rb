@@ -23,9 +23,6 @@ module Async
 				# Manages job queues using Redis for distributed job processing across multiple workers.
 				# Handles immediate jobs, delayed jobs, and job retry/recovery mechanisms.
 				class Server < Generic
-					INITIAL_DEQUEUE_RETRY_DELAY = 0.25
-					MAXIMUM_DEQUEUE_RETRY_DELAY = 5
-					
 					# Initialize a new Redis job processor server.
 					# @parameter delegate [Object] The delegate object that will process jobs.
 					# @parameter client [Async::Redis::Client] The Redis client instance.
@@ -49,8 +46,8 @@ module Async
 						
 						# Ordinary task parents preserve the original single blocking fetch loop.
 						@parent = parent || Async::Idler.new
-						# A semaphore limits both blocking fetches and executing jobs, while the
-						# dispatcher task remains responsible for worker lifecycle.
+						# A semaphore limits both claimed and executing jobs, while the dispatcher
+						# task remains responsible for worker lifecycle.
 						@semaphore = parent if parent.is_a?(Async::Semaphore)
 					end
 					
@@ -62,15 +59,13 @@ module Async
 						@task = true
 						
 						if @semaphore
-							# Reserve a caller-supplied concurrency slot before BRPOPLPUSH. Counting
-							# blocked fetches prevents the dispatcher from opening unbounded Redis IO.
-							Async do |task|
+							# Keep one blocking fetch in flight and transfer the acquired semaphore
+							# slot to the processing child once a job is claimed.
+							Async(transient: true, annotation: self.class.name) do |task|
 								@task = task
 								
 								while true
-									@semaphore.async(parent: task, annotation: self.class.name) do
-										self.dequeue
-									end
+									self.dequeue(task, @semaphore)
 								end
 							ensure
 								@task = nil
@@ -97,7 +92,7 @@ module Async
 						@delayed_jobs.start(@ready_list, resolution: @resolution)
 						
 						# Start the processing processor, which will move jobs to the ready processor when they are abandoned:
-						@processing_list.start
+						@processing_task = @processing_list.start
 						
 						self.start!
 					end
@@ -144,17 +139,30 @@ module Async
 					# If the job fails for any reason, it will be retried.
 					#
 					# If you do not desire this behavior, you should catch exceptions in the delegate.
-					def dequeue(parent = nil)
-						_id = fetch_with_backoff
+					def dequeue(parent, semaphore = nil)
+						self.ensure_processing_task_alive!
+
+						if semaphore
+							semaphore.acquire
+							semaphore_acquired = true
+							self.ensure_processing_task_alive!
+						end
+
+						_id = @processing_list.fetch
+						self.ensure_processing_task_alive!
 						
 						id = _id
-						if parent
-							parent.async{process(id)}
-						else
-							process(id)
+						parent.async do
+							begin
+								process(id)
+							ensure
+								semaphore&.release
+							end
 						end
+						semaphore_acquired = false
 						_id = nil
 					ensure
+						semaphore.release if semaphore_acquired
 						@processing_list.retry(_id) if _id
 					end
 					
@@ -169,35 +177,10 @@ module Async
 					
 					private
 					
-					# Fetch a job while keeping the current dispatcher or semaphore slot reserved.
-					def fetch_with_backoff
-						consecutive_failures = 0
-						
-						loop do
-							begin
-								return @processing_list.fetch
-							rescue Async::Cancel
-								raise
-							rescue => error
-								consecutive_failures += 1
-								retry_in_seconds = dequeue_retry_delay(consecutive_failures)
-								
-								Console.warn(
-									self,
-									"Job dequeue failed; retrying in #{retry_in_seconds} seconds.",
-									error,
-									consecutive_failures:,
-									retry_in_seconds:,
-								)
-								
-								sleep(retry_in_seconds)
-							end
+					def ensure_processing_task_alive!
+						if @processing_task && !@processing_task.alive?
+							raise "Heartbeat task stopped; refusing to dequeue jobs."
 						end
-					end
-					
-					# Compute the bounded exponential delay for a failed dequeue attempt.
-					def dequeue_retry_delay(consecutive_failures)
-						[INITIAL_DEQUEUE_RETRY_DELAY * (2 ** (consecutive_failures - 1)), MAXIMUM_DEQUEUE_RETRY_DELAY].min
 					end
 					
 					def format_count(value)

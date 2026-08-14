@@ -148,7 +148,13 @@ describe Async::Job::Processor::Redis do
 		
 		with "Async::Semaphore" do
 			let(:parent) {Async::Semaphore.new(2)}
-			
+
+			it "uses a transient dispatcher" do
+				dispatcher = server.instance_variable_get(:@task)
+
+				expect(dispatcher).to be(:transient?)
+			end
+
 			it "can limit concurrent job processing to 2" do
 				4.times do |i|
 					server.call({"data" => "job #{i}"})
@@ -179,6 +185,87 @@ describe Async::Job::Processor::Redis do
 				expect(parent.count).to be == 0
 			end
 			
+			with "an idle queue" do
+				let(:fetch_attempts) {[]}
+				let(:server) do
+					subject.new(slow_delegate, prefix:, resolution: 1, parent:).tap do |server|
+						processing_list = server.instance_variable_get(:@processing_list)
+						attempts = fetch_attempts
+
+						processing_list.define_singleton_method(:fetch) do
+							attempts << true
+							sleep
+						end
+					end
+				end
+
+				it "keeps only one blocking fetch in flight" do
+					sleep 0.01
+
+					expect(fetch_attempts).to have_attributes(size: be == 1)
+					expect(parent.count).to be == 1
+				end
+			end
+
+			it "preserves a bounded Redis connection for callers" do
+				client = Async::Redis::Client.new(limit: 2)
+				buffer = Async::Job::Buffer.new
+				bounded_server = Async::Job::Processor::Redis::Server.new(
+					buffer,
+					client,
+					prefix: "#{prefix}:bounded",
+					parent: Async::Semaphore.new(2),
+				)
+				bounded_server.start!
+
+				bounded_server.call(job)
+				expect(buffer.pop).to be == job
+			ensure
+				bounded_server&.stop
+				client&.close
+			end
+
+			with "a stopped heartbeat" do
+				let(:fetch_started) {[]}
+				let(:release_fetch) {[]}
+				let(:retried) {[]}
+				let(:server) do
+					subject.new(slow_delegate, prefix:, resolution: 1, parent:).tap do |server|
+						processing_list = server.instance_variable_get(:@processing_list)
+						started = fetch_started
+						release = release_fetch
+						retried_jobs = retried
+
+						processing_list.define_singleton_method(:fetch) do
+							started << true
+							sleep(0.01) until release.any?
+							"fetched-job"
+						end
+
+						processing_list.define_singleton_method(:retry) do |id|
+							retried_jobs << id
+						end
+					end
+				end
+
+				it "does not process a fetched job" do
+					Async::Task.current.with_timeout(2) do
+						sleep(0.01) until fetch_started.any?
+					end
+
+					server.instance_variable_get(:@processing_task).stop
+					release_fetch << true
+
+					Async::Task.current.with_timeout(2) do
+						sleep(0.01) until retried.any?
+					end
+
+					expect(retried).to be == ["fetched-job"]
+					expect(slow_delegate.started).to be_nil
+					expect(parent.count).to be == 0
+				end
+			end
+
 			with "a Redis outage" do
 				let(:parent) {Async::Semaphore.new(1)}
 				let(:fetch_attempts) {[]}
@@ -186,27 +273,21 @@ describe Async::Job::Processor::Redis do
 					subject.new(slow_delegate, prefix:, resolution: 1, parent:).tap do |server|
 						processing_list = server.instance_variable_get(:@processing_list)
 						attempts = fetch_attempts
-						
+
 						processing_list.define_singleton_method(:fetch) do
 							attempts << Process.clock_gettime(Process::CLOCK_MONOTONIC)
 							raise "Redis unavailable"
 						end
 					end
 				end
-				
-				it "backs off without releasing the worker slot" do
+
+				it "fails closed without retrying" do
 					Async::Task.current.with_timeout(2) do
-						sleep(0.01) until fetch_attempts.size >= 2
+						sleep(0.01) until server.instance_variable_get(:@task).nil?
 					end
-					
-					expect(fetch_attempts[1] - fetch_attempts[0]).to be >= 0.2
-					expect(parent.count).to be == 1
-					expect(server.send(:dequeue_retry_delay, 10)).to be == 5
-					
-					expect_console.to have_logged(
-						severity: be == :warn,
-						message: be(:include?, "Job dequeue failed"),
-					)
+
+					expect(fetch_attempts).to have_attributes(size: be == 1)
+					expect(parent.count).to be == 0
 				end
 			end
 		end
