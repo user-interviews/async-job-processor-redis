@@ -1,9 +1,14 @@
 # Async::Job::Processor::Redis
 
 Provides a Redis-backed asynchronous job server with durable ready, delayed,
-and processing queues. Processing can be bounded by `Async::Semaphore`, and
-Redis queue operations recover from transient failures without stopping the
-server.
+and processing queues. Processing can be bounded by `Async::Semaphore` while
+keeping a single blocking dequeue in flight. A dequeue failure stops the
+dispatcher so it cannot recover independently of the processing heartbeat;
+delayed promotion continues retrying transient Redis failures.
+
+When sharing a bounded Redis client between the server components, reserve at
+least one connection in addition to the connection used by the blocking
+dequeue.
 
 [![Development Status](https://github.com/socketry/async-job-processor-redis/workflows/Test/badge.svg)](https://github.com/socketry/async-job-processor-redis/actions?workflow=Test)
 
