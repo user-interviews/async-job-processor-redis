@@ -3,6 +3,8 @@
 # Released under the MIT License.
 # Copyright, 2024-2025, by Samuel Williams.
 
+require "protocol/redis/error"
+
 module Async
 	module Job
 		module Processor
@@ -105,6 +107,11 @@ module Async
 					# @parameter now [Integer] The current timestamp to check against.
 					# @returns [Integer] The number of jobs moved.
 					def move(destination:, now: Time.now.to_f)
+						@client.evalsha(@move, 2, @key, destination, now)
+					rescue Protocol::Redis::ServerError => error
+						raise unless error.message.start_with?("NOSCRIPT")
+
+						@move = @client.script(:load, MOVE)
 						@client.evalsha(@move, 2, @key, destination, now)
 					end
 					
