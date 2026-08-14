@@ -38,6 +38,17 @@ describe Async::Job::Processor::Redis do
 		expect(buffer.pop).to be == job
 	end
 	
+	it "can dequeue a job synchronously" do
+		synchronous_server = subject.new(buffer, prefix: "#{prefix}:synchronous")
+		synchronous_server.call(job)
+
+		synchronous_server.__send__(:dequeue)
+
+		expect(buffer.pop).to be == job
+	ensure
+		synchronous_server&.instance_variable_get(:@client)&.close
+	end
+
 	with "delayed job" do
 		it "can schedule a job and have it processed after a delay" do
 			now = Time.now

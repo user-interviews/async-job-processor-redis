@@ -139,7 +139,7 @@ module Async
 					# If the job fails for any reason, it will be retried.
 					#
 					# If you do not desire this behavior, you should catch exceptions in the delegate.
-					def dequeue(parent, semaphore = nil)
+					def dequeue(parent = nil, semaphore = nil)
 						self.ensure_processing_task_alive!
 
 						if semaphore
@@ -152,7 +152,15 @@ module Async
 						self.ensure_processing_task_alive!
 						
 						id = _id
-						parent.async do
+						if parent
+							parent.async do
+								begin
+									process(id)
+								ensure
+									semaphore&.release
+								end
+							end
+						else
 							begin
 								process(id)
 							ensure
