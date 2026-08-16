@@ -69,8 +69,11 @@ module Async
 								while true
 									self.dequeue(task, @semaphore)
 								end
+							rescue
+								dispatcher_failed = true
+								raise
 							ensure
-								@task = nil
+								@task = nil unless dispatcher_failed && task.children?
 							end
 						else
 							# The compatibility path keeps exactly one blocking fetch in flight, then
@@ -81,8 +84,11 @@ module Async
 								while true
 									self.dequeue(task)
 								end
+							rescue
+								dispatcher_failed = true
+								raise
 							ensure
-								@task = nil
+								@task = nil unless dispatcher_failed && task.children?
 							end
 						end
 					end
@@ -108,6 +114,7 @@ module Async
 					# Stop the server and all background processing tasks.
 					def stop
 						@task&.stop
+						@task = nil
 						
 						super
 					end

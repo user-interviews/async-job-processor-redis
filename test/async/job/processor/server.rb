@@ -195,6 +195,54 @@ describe Async::Job::Processor::Redis do
 				expect(slow_delegate.cancelled).to be == true
 				expect(parent.count).to be == 0
 			end
+
+			with "a fetch failure after dispatch" do
+				let(:fetch_attempts) {[]}
+				let(:server) do
+					subject.new(slow_delegate, prefix:, resolution: 1, parent:).tap do |server|
+						processing_list = server.instance_variable_get(:@processing_list)
+						fetch = processing_list.method(:fetch)
+						attempts = fetch_attempts
+						delegate = slow_delegate
+
+						processing_list.define_singleton_method(:fetch) do
+							attempts << true
+							if attempts.size > 1
+								sleep(0.01) until delegate.started
+								raise "Redis unavailable"
+							end
+
+							fetch.call
+						end
+					end
+				end
+
+				it "retains workers for cancellation by stop" do
+					server.call(job)
+
+					dispatcher = nil
+					Async::Task.current.with_timeout(2) do
+						loop do
+							dispatcher = server.instance_variable_get(:@task)
+							break if dispatcher&.failed?
+
+							sleep(0.01)
+						end
+					end
+
+					expect(dispatcher).to be(:children?)
+					expect(parent.count).to be == 1
+
+					server.stop
+
+					Async::Task.current.with_timeout(2) do
+						sleep(0.01) until parent.count == 0
+					end
+
+					expect(slow_delegate.cancelled).to be == true
+					expect(server.instance_variable_get(:@task)).to be_nil
+				end
+			end
 			
 			with "an idle queue" do
 				let(:fetch_attempts) {[]}
