@@ -67,8 +67,11 @@ module Async
 								while true
 									self.dequeue(task, @semaphore)
 								end
+							rescue
+								dispatcher_failed = true
+								raise
 							ensure
-								@task = nil
+								@task = nil unless dispatcher_failed && task.children?
 							end
 						else
 							@parent.async(transient: true, annotation: self.class.name) do |task|
@@ -77,8 +80,11 @@ module Async
 								while true
 									self.dequeue(task)
 								end
+							rescue
+								dispatcher_failed = true
+								raise
 							ensure
-								@task = nil
+								@task = nil unless dispatcher_failed && task.children?
 							end
 						end
 					end
@@ -100,6 +106,7 @@ module Async
 					# Stop the server and all background processing tasks.
 					def stop
 						@task&.stop
+						@task = nil
 						
 						super
 					end
