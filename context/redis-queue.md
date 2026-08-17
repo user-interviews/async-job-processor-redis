@@ -64,3 +64,12 @@ Delayed promotion currently moves every due job in one Lua invocation. A large
 backlog after an outage can therefore block Redis or exceed Lua argument
 limits. Future work should promote jobs in bounded, atomic batches so backlog
 size does not make one promotion disproportionately expensive.
+
+Abandoned-job discovery currently scans the full Redis keyspace on every
+processor's heartbeat interval. Future work should track processing lists
+directly so recovery cost scales with AsyncJob workers rather than every key in
+the shared Redis store.
+
+Delegate failures are also returned immediately to the ready queue. Future
+poison-job handling should add bounded backoff or dead-lettering so a repeatedly
+failing payload cannot create a tight Redis, CPU, and logging loop.
