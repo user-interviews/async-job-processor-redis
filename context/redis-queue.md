@@ -57,3 +57,10 @@ can also pass `delayed_jobs_instrumentation`, an object responding to
 
 Logging and instrumentation failures are isolated so observability cannot stop
 scheduled jobs from being promoted.
+
+## Known limitations and future work
+
+Delayed promotion currently moves every due job in one Lua invocation. A large
+backlog after an outage can therefore block Redis or exceed Lua argument
+limits. Future work should promote jobs in bounded, atomic batches so backlog
+size does not make one promotion disproportionately expensive.
