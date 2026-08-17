@@ -69,7 +69,7 @@ module Async
 								end
 								
 								sleep(resolution)
-							rescue Async::Cancel
+							rescue Async::Stop
 								raise
 							rescue => error
 								consecutive_failures += 1
