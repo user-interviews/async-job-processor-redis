@@ -14,6 +14,10 @@ The ready queue is where jobs that are immediately available for processing are 
 
 The delayed queue holds jobs that are not meant to be executed immediately but at a specified future time. This functionality is crucial for tasks that need to be executed at a later stage, such as scheduled notifications or time-dependent processes. Jobs in the delayed queue are sorted according to their execution time. When possible, they are moved to the ready queue to be executed by the next available worker. This transition is managed through Redis's sorted sets, allowing efficient retrieval and management of timed events.
 
+### Future Work
+
+Delayed promotion currently moves every due job in one Lua invocation. A large backlog after an outage can therefore block Redis or exceed Lua argument limits. Future work should promote jobs in bounded, atomic batches so backlog size does not make one promotion disproportionately expensive.
+
 ## Processing Queue
 
 Once a job is dequeued from the ready queue, it enters the processing queue, signifying that it is currently being executed by a worker. The processing queue is crucial for tracking the progress of jobs and for ensuring that jobs can be retried or recovered in case of worker failure. Each worker emits a heartbeat, and if a worker fails to emit a heartbeat within a specified time, any jobs associated with that worker are automatically moved back to the ready queue for reprocessing.
