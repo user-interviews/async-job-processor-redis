@@ -65,5 +65,5 @@ previous failure count. Callback failures are isolated from the promoter.
 
 Omit `parent`, or pass an `Async::Task`, to retain the compatibility behavior:
 one blocking fetch stays in flight while fetched jobs run as children of the
-dispatcher. Redis fetch failures retry in the reserved slot with exponential
-backoff from 0.25 seconds up to 5 seconds.
+dispatcher. A Redis fetch failure stops that dispatcher so it cannot recover
+independently of the processing heartbeat.
