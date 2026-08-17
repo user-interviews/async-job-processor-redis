@@ -29,7 +29,7 @@ Pass `Async::Semaphore` as `parent` to set an explicit bound. The dispatcher
 reserves a semaphore slot before the blocking fetch and holds it through
 processing, so blocked fetches and executing jobs share the same limit.
 
-A failed blocking fetch retries within the same dispatcher or semaphore slot,
-using exponential backoff starting at 0.25 seconds and capped at 5 seconds.
+A failed blocking fetch terminates the dispatcher instead of retrying in
+process, so dequeuing cannot recover independently of the processing heartbeat.
 Stopping the server cancels in-flight workers and releases their semaphore
 slots.
