@@ -18,6 +18,12 @@ The delayed queue holds jobs that are not meant to be executed immediately but a
 
 Once a job is dequeued from the ready queue, it enters the processing queue, signifying that it is currently being executed by a worker. The processing queue is crucial for tracking the progress of jobs and for ensuring that jobs can be retried or recovered in case of worker failure. Each worker emits a heartbeat, and if a worker fails to emit a heartbeat within a specified time, any jobs associated with that worker are automatically moved back to the ready queue for reprocessing.
 
+### Future Work
+
+Abandoned-job discovery currently scans the full Redis keyspace on every processor's heartbeat interval. Future work should track processing lists directly so recovery cost scales with AsyncJob workers rather than every key in the shared Redis store.
+
+Delegate failures are also returned immediately to the ready queue. Future poison-job handling should add bounded backoff or dead-lettering so a repeatedly failing payload cannot create a tight Redis, CPU, and logging loop.
+
 ## Processing concurrency
 
 Without a semaphore `parent`, the server keeps one blocking Redis fetch in
