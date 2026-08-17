@@ -74,7 +74,7 @@ module Async
 								end
 								
 								sleep(resolution)
-							rescue Async::Cancel
+							rescue Async::Stop
 								# Cancellation is lifecycle control, not an operational failure to retry.
 								raise
 							rescue => error
