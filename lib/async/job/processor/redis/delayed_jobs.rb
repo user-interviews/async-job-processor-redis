@@ -15,8 +15,8 @@ module Async
 				class DelayedJobs
 					# Retry transient Redis failures quickly, but cap the delay so scheduled
 					# jobs resume promotion promptly after a longer outage.
-					INITIAL_RETRY_DELAY = 0.25
-					MAXIMUM_RETRY_DELAY = 5
+					INITIAL_RETRY_DELAY = Float(ENV.fetch("ASYNC_JOB_PROCESSOR_REDIS_DELAYED_JOBS_INITIAL_RETRY_DELAY", 0.25))
+					MAXIMUM_RETRY_DELAY = Float(ENV.fetch("ASYNC_JOB_PROCESSOR_REDIS_DELAYED_JOBS_MAXIMUM_RETRY_DELAY", 5))
 					
 					ADD = <<~LUA
 						redis.call('HSET', KEYS[1], ARGV[1], ARGV[2])
@@ -136,7 +136,7 @@ module Async
 						@client.evalsha(@move, 2, @key, destination, now)
 					rescue Protocol::Redis::ServerError => error
 						raise unless error.message.start_with?("NOSCRIPT")
-
+						
 						@move = @client.script(:load, MOVE)
 						@client.evalsha(@move, 2, @key, destination, now)
 					end

@@ -44,8 +44,14 @@ slots.
 ## Delayed-promotion recovery
 
 A Redis or promotion error does not terminate the promoter. It retries with
-exponential backoff starting at 0.25 seconds and capped at 5 seconds. A
-successful move after failures reports recovery and resumes the configured
+exponential backoff. Configure the retry timing with:
+
+- `ASYNC_JOB_PROCESSOR_REDIS_DELAYED_JOBS_INITIAL_RETRY_DELAY`, in seconds
+  (default: `0.25`)
+- `ASYNC_JOB_PROCESSOR_REDIS_DELAYED_JOBS_MAXIMUM_RETRY_DELAY`, in seconds
+  (default: `5`)
+
+A successful move after failures reports recovery and resumes the configured
 polling interval. `Async::Cancel` exits immediately as normal lifecycle control.
 
 The server logs failed attempts and recovery through `Console`. Applications
@@ -57,19 +63,3 @@ can also pass `delayed_jobs_instrumentation`, an object responding to
 
 Logging and instrumentation failures are isolated so observability cannot stop
 scheduled jobs from being promoted.
-
-## Known limitations and future work
-
-Delayed promotion currently moves every due job in one Lua invocation. A large
-backlog after an outage can therefore block Redis or exceed Lua argument
-limits. Future work should promote jobs in bounded, atomic batches so backlog
-size does not make one promotion disproportionately expensive.
-
-Abandoned-job discovery currently scans the full Redis keyspace on every
-processor's heartbeat interval. Future work should track processing lists
-directly so recovery cost scales with AsyncJob workers rather than every key in
-the shared Redis store.
-
-Delegate failures are also returned immediately to the ready queue. Future
-poison-job handling should add bounded backoff or dead-lettering so a repeatedly
-failing payload cannot create a tight Redis, CPU, and logging loop.
